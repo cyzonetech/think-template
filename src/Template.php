@@ -673,9 +673,15 @@ class Template
                 }
             } else {
                 // 取得顶层模板block标签内容
-                $baseBlocks = $this->parseBlock($template, true);
+                [$baseBlocks, $blocks] = $this->parseBlock($template, true, true);
 
                 if (empty($extend)) {
+                    //替换template中的block数据标签
+                    if ($blocks) {
+                        foreach ($blocks as $name => $val) {
+                            $template = str_replace($val['begin'] . $val['content'] . $val['end'], '', $template);
+                        }
+                    }
                     // 无extend标签但有block标签的情况
                     $extend = $template;
                 }
@@ -770,14 +776,15 @@ class Template
     /**
      * 获取模板中的block标签
      * @access private
-     * @param  string   $content 模板内容
-     * @param  boolean  $sort 是否排序
+     * @param string $content 模板内容
+     * @param boolean $sort 是否排序
+     * @param bool $isBase 是否顶层
      * @return array
      */
-    private function parseBlock(string &$content, bool $sort = false): array
+    private function parseBlock(string &$content, bool $sort = false, bool $isBase = false): array
     {
         $regex  = $this->getRegex('block');
-        $result = [];
+        $result = $baseBlocks = [];
 
         if (preg_match_all($regex, $content, $matches, PREG_SET_ORDER | PREG_OFFSET_CAPTURE)) {
             $right = $keys = [];
@@ -789,14 +796,19 @@ class Template
                         $start  = $tag['offset'] + strlen($tag['tag']);
                         $length = $match[0][1] - $start;
 
-                        $result[$tag['name']] = [
+                        $block = [
                             'begin'   => $tag['tag'],
                             'content' => substr($content, $start, $length),
                             'end'     => $match[0][0],
                             'parent'  => count($right) ? end($right)['name'] : '',
                         ];
 
-                        $keys[$tag['name']] = $match[0][1];
+                        if ($isBase && ($block['content'] == '' || preg_match('/\{__block__\}/i', $block['content']))) {
+                            $baseBlocks[$tag['name']] = $block;
+                        } else {
+                            $result[$tag['name']] = $block;
+                            $keys[$tag['name']] = $match[0][1];
+                        }
                     }
                 } else {
                     // 标签头压入栈
@@ -816,7 +828,7 @@ class Template
             }
         }
 
-        return $result;
+        return $isBase ? [$baseBlocks, $result] : $result;
     }
 
     /**
