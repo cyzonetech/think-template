@@ -252,7 +252,7 @@ class Template
             }
 
             // 读取编译存储
-            $this->storage->read($cacheFile, $this->data);
+            $this->storage->read($cacheFile, $this->data, $this);
 
             // 获取并清空缓存
             $content = ob_get_clean();
@@ -388,24 +388,6 @@ class Template
      */
     private function compiler(string &$content, string $cacheFile): void
     {
-        // 判断是否启用布局
-        if ($this->config['layout_on']) {
-            if (false !== strpos($content, '{__NOLAYOUT__}')) {
-                // 可以单独定义不使用布局
-                $content = str_replace('{__NOLAYOUT__}', '', $content);
-            } else {
-                // 读取布局模板
-                $layoutFile = $this->parseTemplateFile($this->config['layout_name']);
-
-                if ($layoutFile) {
-                    // 替换布局的主体内容
-                    $content = str_replace($this->config['layout_item'], $content, file_get_contents($layoutFile));
-                }
-            }
-        } else {
-            $content = str_replace('{__NOLAYOUT__}', '', $content);
-        }
-
         // 模板解析
         $this->parse($content);
 
@@ -445,17 +427,23 @@ class Template
             return;
         }
 
+        // 解析布局
+        $this->parseLayout($content);
+
         // 替换literal标签内容
         $this->parseLiteral($content);
+
+        // 检查include语法
+        $this->parseInclude($content);
+
+        // 检查template语法
+        $this->parseTemplate($content);
 
         // 解析继承
         $this->parseExtend($content);
 
-        // 解析布局
-        $this->parseLayout($content);
-
-        // 检查include语法
-        $this->parseInclude($content);
+        // 解析TopCms兼容语法
+        $this->parseCmsLib($content);
 
         // 替换包含文件中literal标签内容
         $this->parseLiteral($content);
@@ -521,6 +509,21 @@ class Template
     }
 
     /**
+     * 解析模板中的CmsLib标签
+     * @access private
+     * @param  string $content 要解析的模板内容
+     * @return void
+     */
+    private function parseCmsLib(&$content): void
+    {
+        $className = 'app\\common\\kernel\\TemplateCmsLib';
+        if (class_exists($className)) {
+            $templateLib = new $className;
+            $content = $templateLib->parse($content);
+        }
+    }
+
+    /**
      * 解析模板中的布局标签
      * @access private
      * @param  string $content 要解析的模板内容
@@ -543,6 +546,20 @@ class Template
                     $replace = isset($array['replace']) ? $array['replace'] : $this->config['layout_item'];
                     // 替换布局的主体内容
                     $content = str_replace($replace, $content, file_get_contents($layoutFile));
+                }
+            }
+        } elseif ($this->config['layout_on']) {
+            // 判断是否启用布局
+            if (false !== strpos($content, '{__NOLAYOUT__}')) {
+                // 可以单独定义不使用布局
+                $content = str_replace('{__NOLAYOUT__}', '', $content);
+            } else {
+                // 读取布局模板
+                $layoutFile = $this->parseTemplateFile($this->config['layout_name']);
+
+                if ($layoutFile) {
+                    // 替换布局的主体内容
+                    $content = str_replace($this->config['layout_item'], $content, file_get_contents($layoutFile));
                 }
             }
         } else {
@@ -591,6 +608,42 @@ class Template
     }
 
     /**
+     * 解析模板中的template标签
+     * @access private
+     * @param  string $content 要解析的模板内容
+     * @return void
+     */
+    private function parseTemplate(string &$content): void
+    {
+        $regex = $this->getRegex('template');
+        $func  = function ($template) use (&$func, &$regex, &$content) {
+            if (preg_match_all($regex, $template, $matches, PREG_SET_ORDER)) {
+                foreach ($matches as $match) {
+                    $parseStr = [];
+                    $array = $this->parseAttr($match[0]);
+                    $file  = $array['file'];
+                    unset($array['file']);
+
+                    //多模板支持，使用,分隔
+                    if (strpos($file, ',')) {
+                        $files = explode(',', $file);
+                        foreach ($files as $file) {
+                            $parseStr[] = '<?php $this->engine->fetch("' . $file . '", $this->vars); ?>';
+                        }
+                    } else {
+                        $parseStr[] = '<?php $this->engine->fetch("' . $file . '", $this->vars); ?>';
+                    }
+                    $content = str_replace($match[0], implode($parseStr), $content);
+                }
+                unset($matches);
+            }
+        };
+
+        // 替换模板中的template标签
+        $func($content);
+    }
+
+    /**
      * 解析模板中的extend标签
      * @access private
      * @param  string $content 要解析的模板内容
@@ -608,7 +661,8 @@ class Template
                     $array[$matches['name']] = 1;
                     // 读取继承模板
                     $extend = $this->parseTemplateName($matches['name']);
-
+                    // 替换继承模板中的include标签
+                    $this->parseInclude($extend);
                     // 递归检查继承
                     $func($extend);
 
@@ -1235,7 +1289,10 @@ class Template
     private function parseTemplateFile(string $template): string
     {
         if ('' == pathinfo($template, PATHINFO_EXTENSION)) {
-
+            if (strpos($template, '@')) {
+                list($appName, $template) = explode('@', $template);
+                $this->config['view_path'] = str_replace('/\/app\/[\w+]\//i', "/app/{$appName}/", $this->config['view_path']);
+            }
             if (0 !== strpos($template, '/')) {
                 $template = str_replace(['/', ':'], $this->config['view_depr'], $template);
             } else {
@@ -1301,6 +1358,7 @@ class Template
                     $regex = '<!--###literal(\d+)###-->';
                     break;
                 case 'include':
+                case 'template':
                     $name = 'file';
                 case 'taglib':
                 case 'layout':

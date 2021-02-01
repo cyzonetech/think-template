@@ -17,6 +17,10 @@ class File
 {
     protected $cacheFile;
 
+    private $engine;
+
+    private $vars;
+
     /**
      * 写入编译缓存
      * @access public
@@ -46,9 +50,11 @@ class File
      * @param  array   $vars 变量数组
      * @return void
      */
-    public function read(string $cacheFile, array $vars = []): void
+    public function read(string $cacheFile, array $vars = [], &$engine): void
     {
         $this->cacheFile = $cacheFile;
+        $this->engine = $engine;
+        $this->vars = $vars;
 
         if (!empty($vars) && is_array($vars)) {
             // 模板阵列变量分解成为独立变量
