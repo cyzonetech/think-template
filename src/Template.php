@@ -436,11 +436,11 @@ class Template
         // 检查include语法
         $this->parseInclude($content);
 
-        // 检查template语法
-        $this->parseTemplate($content);
-
         // 解析继承
         $this->parseExtend($content);
+
+        // 检查template语法
+        $this->parseTemplate($content);
 
         // 解析TopCms兼容语法
         $this->parseCmsLib($content);
@@ -531,6 +531,28 @@ class Template
      */
     private function parseLayout(string &$content): void
     {
+        $replaceContent = function ($layoutFile, $replace, $content) {
+            $extend = file_get_contents($layoutFile);
+            // 检查include语法
+            $this->parseInclude($extend);
+            // 取得顶层模板block标签内容
+            $baseBlocks = $this->parseBlock($extend, true);
+            $blocks = $this->parseBlock($content, true);
+
+            $regex  = $this->getRegex('extend');
+            if (preg_match($regex, $content, $matches)) {
+                $this->parseExtend($content);
+            } elseif($blocks) {
+                //替换$content中的block数据标签
+                foreach ($blocks as $name => $val) {
+                    $content = str_replace($val['begin'] . $val['content'] . $val['end'], '', $content);
+                }
+            }
+            // 替换layout的blocks
+            $extend = $this->replaceBlock($extend, $baseBlocks, $blocks);
+
+            return str_replace($replace, $content, $extend);
+        };
         // 读取模板中的布局标签
         if (preg_match($this->getRegex('layout'), $content, $matches)) {
             // 替换Layout标签
@@ -538,15 +560,13 @@ class Template
             // 解析Layout标签
             $array = $this->parseAttr($matches[0]);
 
-            if (!$this->config['layout_on'] || $this->config['layout_name'] != $array['name']) {
-                // 读取布局模板
-                $layoutFile = $this->parseTemplateFile($array['name']);
+            // 读取布局模板
+            $layoutFile = $this->parseTemplateFile($array['name']);
 
-                if ($layoutFile) {
-                    $replace = isset($array['replace']) ? $array['replace'] : $this->config['layout_item'];
-                    // 替换布局的主体内容
-                    $content = str_replace($replace, $content, file_get_contents($layoutFile));
-                }
+            if ($layoutFile) {
+                $replace = isset($array['replace']) ? $array['replace'] : $this->config['layout_item'];
+                // 替换布局的主体内容
+                $content = $replaceContent($layoutFile, $replace, $content);
             }
         } elseif ($this->config['layout_on']) {
             // 判断是否启用布局
@@ -556,10 +576,9 @@ class Template
             } else {
                 // 读取布局模板
                 $layoutFile = $this->parseTemplateFile($this->config['layout_name']);
-
                 if ($layoutFile) {
                     // 替换布局的主体内容
-                    $content = str_replace($this->config['layout_item'], $content, file_get_contents($layoutFile));
+                    $content = $replaceContent($layoutFile, $this->config['layout_item'], $content);
                 }
             }
         } else {
@@ -673,15 +692,9 @@ class Template
                 }
             } else {
                 // 取得顶层模板block标签内容
-                [$baseBlocks, $blocks] = $this->parseBlock($template, true, true);
+                $baseBlocks = $this->parseBlock($template, true);
 
                 if (empty($extend)) {
-                    //替换template中的block数据标签
-                    if ($blocks) {
-                        foreach ($blocks as $name => $val) {
-                            $template = str_replace($val['begin'] . $val['content'] . $val['end'], '', $template);
-                        }
-                    }
                     // 无extend标签但有block标签的情况
                     $extend = $template;
                 }
@@ -691,51 +704,9 @@ class Template
         $func($content);
 
         if (!empty($extend)) {
-            if ($baseBlocks) {
-                $children = [];
-                foreach ($baseBlocks as $name => $val) {
-                    $replace = $val['content'];
-
-                    if (!empty($children[$name])) {
-                        // 如果包含有子block标签
-                        foreach ($children[$name] as $key) {
-                            $replace = str_replace($baseBlocks[$key]['begin'] . $baseBlocks[$key]['content'] . $baseBlocks[$key]['end'], $blocks[$key]['content'], $replace);
-                        }
-                    }
-
-                    if (isset($blocks[$name])) {
-                        // 带有{__block__}表示与所继承模板的相应标签合并，而不是覆盖
-                        $replace = str_replace(['{__BLOCK__}', '{__block__}'], $replace, $blocks[$name]['content']);
-
-                        if (!empty($val['parent'])) {
-                            // 如果不是最顶层的block标签
-                            $parent = $val['parent'];
-
-                            if (isset($blocks[$parent])) {
-                                $blocks[$parent]['content'] = str_replace($blocks[$name]['begin'] . $blocks[$name]['content'] . $blocks[$name]['end'], $replace, $blocks[$parent]['content']);
-                            }
-
-                            $blocks[$name]['content'] = $replace;
-                            $children[$parent][]      = $name;
-
-                            continue;
-                        }
-                    } elseif (!empty($val['parent'])) {
-                        // 如果子标签没有被继承则用原值
-                        $children[$val['parent']][] = $name;
-                        $blocks[$name]              = $val;
-                    }
-
-                    if (!$val['parent']) {
-                        // 替换模板中的顶级block标签
-                        $extend = str_replace($val['begin'] . $val['content'] . $val['end'], $replace, $extend);
-                    }
-                }
-            }
-
-            $content = $extend;
-            unset($blocks, $baseBlocks);
+            $content = $this->replaceBlock($extend, $baseBlocks, $blocks);
         }
+        unset($blocks, $baseBlocks);
     }
 
     /**
@@ -781,7 +752,7 @@ class Template
      * @param bool $isBase 是否顶层
      * @return array
      */
-    private function parseBlock(string &$content, bool $sort = false, bool $isBase = false): array
+    private function parseBlock(string &$content, bool $sort = false): array
     {
         $regex  = $this->getRegex('block');
         $result = $baseBlocks = [];
@@ -796,19 +767,14 @@ class Template
                         $start  = $tag['offset'] + strlen($tag['tag']);
                         $length = $match[0][1] - $start;
 
-                        $block = [
+                        $result[$tag['name']] = [
                             'begin'   => $tag['tag'],
                             'content' => substr($content, $start, $length),
                             'end'     => $match[0][0],
                             'parent'  => count($right) ? end($right)['name'] : '',
                         ];
 
-                        if ($isBase && ($block['content'] == '' || preg_match('/\{__block__\}/i', $block['content']))) {
-                            $baseBlocks[$tag['name']] = $block;
-                        } else {
-                            $result[$tag['name']] = $block;
-                            $keys[$tag['name']] = $match[0][1];
-                        }
+                        $keys[$tag['name']] = $match[0][1];
                     }
                 } else {
                     // 标签头压入栈
@@ -828,7 +794,61 @@ class Template
             }
         }
 
-        return $isBase ? [$baseBlocks, $result] : $result;
+        return $result;
+    }
+
+    /**
+     * 替换模板中的block标签
+     * @access private
+     * @param string $extend 模板内容
+     * @param array $baseBlocks 顶层blocks
+     * @param array $blocks blocks
+     * @return string
+     */
+    private function replaceBlock(string $extend, array $baseBlocks, array $blocks): string
+    {
+        if ($baseBlocks) {
+            $children = [];
+            foreach ($baseBlocks as $name => $val) {
+                $replace = $val['content'];
+
+                if (!empty($children[$name])) {
+                    // 如果包含有子block标签
+                    foreach ($children[$name] as $key) {
+                        $replace = str_replace($baseBlocks[$key]['begin'] . $baseBlocks[$key]['content'] . $baseBlocks[$key]['end'], $blocks[$key]['content'], $replace);
+                    }
+                }
+
+                if (isset($blocks[$name])) {
+                    // 带有{__block__}表示与所继承模板的相应标签合并，而不是覆盖
+                    $replace = str_replace(['{__BLOCK__}', '{__block__}'], $replace, $blocks[$name]['content']);
+
+                    if (!empty($val['parent'])) {
+                        // 如果不是最顶层的block标签
+                        $parent = $val['parent'];
+
+                        if (isset($blocks[$parent])) {
+                            $blocks[$parent]['content'] = str_replace($blocks[$name]['begin'] . $blocks[$name]['content'] . $blocks[$name]['end'], $replace, $blocks[$parent]['content']);
+                        }
+
+                        $blocks[$name]['content'] = $replace;
+                        $children[$parent][]      = $name;
+
+                        continue;
+                    }
+                } elseif (!empty($val['parent'])) {
+                    // 如果子标签没有被继承则用原值
+                    $children[$val['parent']][] = $name;
+                    $blocks[$name]              = $val;
+                }
+
+                if (!$val['parent']) {
+                    // 替换模板中的顶级block标签
+                    $extend = str_replace($val['begin'] . $val['content'] . $val['end'], $replace, $extend);
+                }
+            }
+        }
+        return $extend;
     }
 
     /**
