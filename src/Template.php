@@ -1323,7 +1323,8 @@ class Template
         if ('' == pathinfo($template, PATHINFO_EXTENSION)) {
             if (strpos($template, '@')) {
                 list($appName, $template) = explode('@', $template);
-                $this->config['view_path'] = str_replace('/\/app\/[\w+]\//i', "/app/{$appName}/", $this->config['view_path']);
+                preg_match('/\/app\/\w+\//i', $this->config['view_path'], $m);
+                $this->config['view_path'] = str_replace($m[0], "/app/{$appName}/", $this->config['view_path']);
             }
             if (0 !== strpos($template, '/')) {
                 $template = str_replace(['/', ':'], $this->config['view_depr'], $template);
