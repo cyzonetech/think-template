@@ -1321,10 +1321,11 @@ class Template
     private function parseTemplateFile(string $template): string
     {
         if ('' == pathinfo($template, PATHINFO_EXTENSION)) {
+            $viewPath = $this->config['view_path'];
             if (strpos($template, '@')) {
                 list($appName, $template) = explode('@', $template);
-                preg_match('/\/app\/\w+\//i', $this->config['view_path'], $m);
-                $this->config['view_path'] = str_replace($m[0], "/app/{$appName}/", $this->config['view_path']);
+                preg_match('/\/app\/\w+\//i', $viewPath, $m);
+                $viewPath = str_replace($m[0], "/app/{$appName}/", $viewPath);
             }
             if (0 !== strpos($template, '/')) {
                 $template = str_replace(['/', ':'], $this->config['view_depr'], $template);
@@ -1332,7 +1333,7 @@ class Template
                 $template = str_replace(['/', ':'], $this->config['view_depr'], substr($template, 1));
             }
 
-            $template = $this->config['view_path'] . $template . '.' . ltrim($this->config['view_suffix'], '.');
+            $template = $viewPath . $template . '.' . ltrim($this->config['view_suffix'], '.');
         }
 
         if (is_file($template)) {
